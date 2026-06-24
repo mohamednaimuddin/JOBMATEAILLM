@@ -1253,14 +1253,14 @@
             return inputVal || geminiApiKey || apiKey;
         }
 
-        // Direct Fetch Execution to Gemini API strictly configured for preview sandbox
+        // Direct Fetch Execution to Gemini API strictly configured for robust failovers
         async function fetchGeminiAPI(systemInstruction, userQuery) {
             const keyToUse = getActiveApiKey();
             
-            // Setup a list of candidate models, starting with standard production gemini-2.5-flash
+            // Setup a list of prioritized stable candidate models
             const candidateModels = [
-                "gemini-2.5-flash",
                 "gemini-1.5-flash",
+                "gemini-2.5-flash",
                 "gemini-2.5-flash-preview-09-2025"
             ];
             
@@ -1285,9 +1285,9 @@
                     }
                 };
 
-                // Try each model up to 2 times before falling back to the next model in pool
                 let maxRetries = 2;
                 let delay = 1000;
+                let skipToNextModel = false;
                 
                 for (let attempt = 1; attempt <= maxRetries; attempt++) {
                     try {
@@ -1303,9 +1303,18 @@
                             const errDetails = await response.json();
                             const errMsg = errDetails?.error?.message || `HTTP ${response.status}`;
                             
-                            // If the model is literally not found or unsupported on this key, skip to next candidate model immediately
-                            if (response.status === 404 || errMsg.toLowerCase().includes("not found") || errMsg.toLowerCase().includes("not supported")) {
+                            // If the API key is explicitly invalid, throw immediately to prevent confusing masking errors
+                            if (response.status === 400 && (errMsg.toLowerCase().includes("key") || errMsg.toLowerCase().includes("not valid") || errMsg.toLowerCase().includes("invalid"))) {
+                                throw new Error(`Invalid API Key: ${errMsg}`);
+                            }
+                            if (response.status === 403) {
+                                throw new Error(`Authentication/Access Forbidden: ${errMsg}`);
+                            }
+                            
+                            // If the model is not found or unsupported, skip to next candidate model
+                            if (response.status === 404 || errMsg.toLowerCase().includes("not found") || errMsg.toLowerCase().includes("not supported") || errMsg.toLowerCase().includes("deprecated")) {
                                 lastError = new Error(`Model ${targetModel} not supported: ${errMsg}`);
+                                skipToNextModel = true;
                                 break; 
                             }
                             throw new Error(errMsg);
@@ -1321,11 +1330,26 @@
 
                     } catch (error) {
                         lastError = error;
+                        
+                        // If it's an API Key or Auth error, throw it all the way up immediately
+                        if (error.message.includes("Invalid API Key") || error.message.includes("Authentication/Access Forbidden")) {
+                            throw error;
+                        }
+                        
+                        if (skipToNextModel) {
+                            break;
+                        }
+                        
                         if (attempt < maxRetries) {
                             await new Promise(resolve => setTimeout(resolve, delay));
                             delay *= 1.5;
                         }
                     }
+                }
+                
+                // If we broke out of the attempt loop due to unsupported model, continue to next model candidate
+                if (skipToNextModel) {
+                    continue;
                 }
             }
 
@@ -2179,7 +2203,7 @@
 
             const messagesViewport = document.getElementById('chat-messages-viewport');
             const userBubble = document.createElement('div');
-            userBubble.className = 'chat-bubble chat-bubble-user';
+            userBubble.className = 'chat-bubble user';
             userBubble.innerText = queryText;
             messagesViewport.appendChild(userBubble);
             
