@@ -1256,62 +1256,80 @@
         // Direct Fetch Execution to Gemini API strictly configured for preview sandbox
         async function fetchGeminiAPI(systemInstruction, userQuery) {
             const keyToUse = getActiveApiKey();
-            const targetModel = "gemini-2.5-flash-preview-09-2025";
-            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${keyToUse}`;
             
-            const payload = {
-                contents: [
-                    {
-                        parts: [
-                            { text: userQuery }
-                        ]
-                    }
-                ],
-                systemInstruction: {
-                    parts: [
-                        { text: systemInstruction }
-                    ]
-                }
-            };
-
-            // Exponential backoff retries for connection stability
-            let maxRetries = 5;
-            let delay = 1000;
+            // Setup a list of candidate models, starting with standard production gemini-2.5-flash
+            const candidateModels = [
+                "gemini-2.5-flash",
+                "gemini-1.5-flash",
+                "gemini-2.5-flash-preview-09-2025"
+            ];
+            
             let lastError = null;
             
-            for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                try {
-                    const response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(payload)
-                    });
-
-                    if (!response.ok) {
-                        const errDetails = await response.json();
-                        throw new Error(errDetails?.error?.message || `HTTP ${response.status}`);
+            // Loop through model candidate pool to guarantee success with both sandbox keys and personal API keys
+            for (const targetModel of candidateModels) {
+                const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${keyToUse}`;
+                
+                const payload = {
+                    contents: [
+                        {
+                            parts: [
+                                { text: userQuery }
+                            ]
+                        }
+                    ],
+                    systemInstruction: {
+                        parts: [
+                            { text: systemInstruction }
+                        ]
                     }
+                };
 
-                    const data = await response.json();
-                    const textResult = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (!textResult) {
-                        throw new Error("Received empty payload response structure from Gemini API.");
-                    }
-                    
-                    return textResult;
+                // Try each model up to 2 times before falling back to the next model in pool
+                let maxRetries = 2;
+                let delay = 1000;
+                
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        const response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(payload)
+                        });
 
-                } catch (error) {
-                    lastError = error;
-                    if (attempt < maxRetries) {
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        delay *= 2;
+                        if (!response.ok) {
+                            const errDetails = await response.json();
+                            const errMsg = errDetails?.error?.message || `HTTP ${response.status}`;
+                            
+                            // If the model is literally not found or unsupported on this key, skip to next candidate model immediately
+                            if (response.status === 404 || errMsg.toLowerCase().includes("not found") || errMsg.toLowerCase().includes("not supported")) {
+                                lastError = new Error(`Model ${targetModel} not supported: ${errMsg}`);
+                                break; 
+                            }
+                            throw new Error(errMsg);
+                        }
+
+                        const data = await response.json();
+                        const textResult = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (!textResult) {
+                            throw new Error("Received empty payload response structure from Gemini API.");
+                        }
+                        
+                        return textResult;
+
+                    } catch (error) {
+                        lastError = error;
+                        if (attempt < maxRetries) {
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            delay *= 1.5;
+                        }
                     }
                 }
             }
 
-            throw lastError || new Error("Connection failed after multiple retry intervals.");
+            throw lastError || new Error("Failed to communicate with any of the candidate Gemini models.");
         }
 
         // Fetch Text-to-Speech Audio via Gemini TTS model
@@ -2034,6 +2052,7 @@
             triggerSpeechSynthesis(blockId, textContent, voiceSelected);
         }
 
+        // Context intelligent limit truncation utility
         function smartContextTrim(text, maxChars) {
             if (!text) return "";
             if (text.length <= maxChars) return text;
