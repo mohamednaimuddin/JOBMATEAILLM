@@ -460,7 +460,10 @@
         .pdf-iframe-container {
             width: 100%;
             height: 100%;
+            min-height: 520px;
             border: none;
+            border: 1px solid var(--slate-200);
+            border-radius: var(--radius-md);
         }
 
         .text-viewer {
@@ -1210,6 +1213,7 @@
         // Core App Memory States
         let dbFiles = []; 
         let currentActiveFileId = null;
+        let activePreviewObjectUrl = null;
         const apiKey = ""; // The execution environment provides the key at runtime.
         let geminiApiKey = "";
         let isApiValid = false;
@@ -1660,8 +1664,16 @@
             showToast("Document removed.", "info");
         }
 
+        function cleanupActivePreviewObjectUrl() {
+            if (activePreviewObjectUrl) {
+                URL.revokeObjectURL(activePreviewObjectUrl);
+                activePreviewObjectUrl = null;
+            }
+        }
+
         function resetWorkspaceViewer() {
             const viewer = document.getElementById('viewer-main-content');
+            cleanupActivePreviewObjectUrl();
             document.getElementById('viewer-title').innerHTML = `<i class="fa-solid fa-eye"></i> Selected Document Panel`;
             viewer.innerHTML = `
                 <div class="empty-state">
@@ -1682,7 +1694,28 @@
             const viewer = document.getElementById('viewer-main-content');
             const title = document.getElementById('viewer-title');
 
+            cleanupActivePreviewObjectUrl();
+
             title.innerHTML = `<i class="fa-solid fa-file-arrow-up"></i> Active Preview: <span style="font-weight: 500; font-size: 0.85rem; margin-left: 0.5rem; background: var(--slate-100); padding: 0.2rem 0.6rem; border-radius: 4px;">${doc.name}</span>`;
+
+            const isPdf = doc.fileRef && (doc.fileRef.type === "application/pdf" || doc.name.toLowerCase().endsWith('.pdf'));
+            if (isPdf) {
+                const pdfUrl = URL.createObjectURL(doc.fileRef);
+                activePreviewObjectUrl = pdfUrl;
+
+                viewer.innerHTML = `
+                    <div style="font-size: 0.75rem; color: var(--slate-500); margin-bottom: 0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                        <i class="fa-solid fa-file-pdf" style="color:#dc2626;"></i>
+                        PDF preview mode enabled. Extracted text continues processing in the background for AI analysis.
+                    </div>
+                    <iframe
+                        class="pdf-iframe-container"
+                        src="${pdfUrl}#toolbar=1&navpanes=0&view=FitH"
+                        title="PDF Preview - ${escapeHtml(doc.name)}"
+                    ></iframe>
+                `;
+                return;
+            }
 
             if (!doc.extracted) {
                 viewer.innerHTML = `
